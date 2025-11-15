@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+
+
+.glass-header {
+  backdrop-filter: blur(6px);
+  background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.55));
+  border-bottom: 1px solid rgba(15,23,42,0.06);
+}
+.logo-3d { transition: transform .16s cubic-bezier(.2,.9,.2,1), box-shadow .16s; transform-style: preserve-3d; }
+.logo-3d.pulse { animation: logoPulse .6s ease; }
+@keyframes logoPulse { 0%{transform:scale(1)}50%{transform:scale(1.06) translateZ(10px)}100%{transform:scale(1)} }
+.shadow-input { box-shadow: 0 6px 20px rgba(2,6,23,0.06); }
+.nav-item { transition: transform .14s cubic-bezier(.2,.9,.2,1); will-change: transform; }
+.page {
+  padding-top: var(--header-height);
+}
