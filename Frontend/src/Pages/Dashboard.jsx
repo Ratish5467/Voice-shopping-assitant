@@ -627,6 +627,10 @@ export default function Dashboard() {
                     <h3 className="font-semibold flex items-center gap-2"><Mic size={18} /> Voice Input</h3>
                     <span className="text-xs px-2 py-1 rounded-full bg-white/10">Multilingual</span>
                   </div>
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-small flex items-center gap-2 mt-2 mr-2"> Speak clear phareses likee "add Banana or add apple" </h3>
+                    
+                  </div>
 
                   <div className="mt-3">
                     <button
@@ -637,10 +641,7 @@ export default function Dashboard() {
                     </button>
                   </div>
 
-                  {/* VoiceInput component */}
-                  <div className="mt-4">
-                    <VoiceInput onResult={handleVoiceCommand} onStart={() => setListeningState(true)} onStop={() => setListeningState(false)} />
-                  </div>
+                 
 
                   {/* TRANSLATED & PARSE PREVIEW */}
                   <div className="mt-4 bg-black/20 p-3 rounded-md text-sm">
