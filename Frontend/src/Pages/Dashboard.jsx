@@ -86,7 +86,7 @@ export default function Dashboard() {
 
   const toast = useToast(3500);
 
-  // LOAD ITEMS
+  
   async function loadItems() {
     setLoading(true);
     try {
@@ -105,7 +105,7 @@ export default function Dashboard() {
     loadItems();
   }, []);
 
-  // merge local
+
   function mergeItemLocally(name, qty, price) {
     setItems((prev) => {
       const arr = [...prev];
@@ -204,7 +204,109 @@ export default function Dashboard() {
     if (!itemText) return null;
     return matchProductName(itemText);
   }
+async function partialRemoveQuantity(existing, removeQty) {
+  if (!existing || !removeQty || removeQty <= 0) {
+    return { success: false, removed: 0, message: "Nothing to remove" };
+  }
 
+  const name = existing.name;
+  let toRemove = Number(removeQty);
+  let removedTotal = 0;
+  const readds = []; 
+
+  try {
+    
+    const raw = await fetchItems(); 
+    
+    const candidates = raw.filter(r => {
+      try {
+        const rn = normalizeKey(r.name || "");
+        const en = normalizeKey(name || "");
+        if (!rn || !en) return false;
+        if (rn === en) return true;
+        if (rn.includes(en)) return true;
+        if (en.includes(rn)) return true;
+        if (rn.replace(/s$/, "") === en.replace(/s$/, "")) return true;
+        return false;
+      } catch (e) { return false; }
+    });
+
+    if (!candidates || candidates.length === 0) {
+     
+      const sids = Array.isArray(existing.serverIds) && existing.serverIds.length ? existing.serverIds : existing._id ? [existing._id] : [];
+     
+      if (sids.length > 0) {
+       
+        for (const sid of sids) {
+          try { await deleteItem(sid); } catch (e) { console.warn("fallback deleteItem failed for", sid, e); }
+        }
+        const existingQty = Number(existing.quantity || 0);
+        const remaining = Math.max(0, existingQty - toRemove);
+        if (remaining > 0) {
+          await addItem({ name: existing.name, quantity: remaining, price: existing.price || 0 });
+        }
+        removedTotal = Math.min(existingQty, toRemove);
+        await loadItems();
+        return { success: true, removed: removedTotal, message: "Fallback delete (no server records found)" };
+      } else {
+        return { success: false, removed: 0, message: "No server records to delete" };
+      }
+    }
+
+    for (const rec of candidates) {
+      if (toRemove <= 0) break;
+      const recQty = Number(rec.quantity || rec.qty || 0);
+      const recId = rec._id || rec.id || null;
+      const recPrice = Number(rec.price || existing.price || 0);
+
+      if (!recId) {
+      
+        continue;
+      }
+
+      if (recQty <= toRemove) {
+       
+        try {
+          await deleteItem(recId);
+          removedTotal += recQty;
+          toRemove -= recQty;
+        } catch (e) {
+          console.warn("deleteItem failed for", recId, e);
+        }
+      } else {
+       
+        try {
+          await deleteItem(recId);
+         
+          const remainingHere = recQty - toRemove;
+          if (remainingHere > 0) {
+            readds.push({ name: existing.name, quantity: remainingHere, price: recPrice });
+          }
+          removedTotal += toRemove;
+          toRemove = 0;
+          break;
+        } catch (e) {
+          console.warn("partial delete failed for", recId, e);
+        }
+      }
+    }
+
+ 
+    for (const r of readds) {
+      try {
+        await addItem({ name: r.name, quantity: Number(r.quantity || 0), price: Number(r.price || 0) });
+      } catch (e) {
+        console.warn("re-add after partial delete failed for", r, e);
+      }
+    }
+
+    await loadItems();
+    return { success: true, removed: removedTotal, message: toRemove > 0 ? `Removed ${removedTotal}, ${toRemove} not found on server` : `Removed ${removedTotal}` };
+  } catch (err) {
+    console.error("partialRemoveQuantity error:", err);
+    return { success: false, removed: removedTotal, message: "Error during partial removal" };
+  }
+}
   
   async function addToCartByProduct(productObj, qty = 1) {
     if (!productObj) return toast.show("Product data missing");
@@ -226,281 +328,387 @@ export default function Dashboard() {
   }
 
  async function handleDelete(targetIdOrName) {
-    if (!targetIdOrName) {
-      toast.show("Invalid delete request");
-      console.warn("handleDelete called with empty target");
-      return;
-    }
+  if (!targetIdOrName) {
+    toast.show("Invalid delete request");
+    console.warn("handleDelete called with empty target");
+    return;
+  }
 
-    console.info("handleDelete called for:", targetIdOrName);
-    console.info("CURRENT CART ITEMS:", items);
-
-
-    let found = findItemByName(targetIdOrName);
-
-   
-    if (!found) {
-      const cleaned = String(targetIdOrName).replace(/["'`]/g, "").trim();
-      if (cleaned !== targetIdOrName) {
-        found = findItemByName(cleaned);
-      }
-    }
+  console.info("handleDelete called for:", targetIdOrName);
+  console.info("CURRENT CART ITEMS:", items);
 
 
-    if (!found) {
-      const cat = matchProductName(targetIdOrName);
-      if (cat && cat.name) {
-        console.info("Catalogue fallback matched:", cat.name);
-        found = findItemByName(cat.name);
-      }
-    }
-
-   
-    if (!found) {
-      const targetTokens = normalizeKey(targetIdOrName).split(/\s+/).filter(Boolean);
-      if (targetTokens.length) {
-        for (const it of items) {
-          const iname = normalizeKey(it.name);
-         
-          const hits = targetTokens.filter(tok => iname.includes(tok) || iname.replace(/s$/, "").includes(tok.replace(/s$/, ""))).length;
-          if (hits >= Math.max(1, Math.floor(targetTokens.length / 2))) {
-            found = it;
-            console.info("Token-loose fallback matched item", it.name, "for tokens", targetTokens);
-            break;
-          }
-        }
-      }
-    }
-
-    if (!found) {
-      toast.show("Item not in cart");
-      console.info("handleDelete: could not resolve", targetIdOrName, "— items:", items);
-      return;
-    }
-
-    console.info("handleDelete: resolved to", found);
+  let found = findItemByName(targetIdOrName);
 
 
-    const serverIds = Array.isArray(found.serverIds) ? found.serverIds.filter(Boolean) : (found._id ? [found._id] : []);
-    const primaryId = found._id || serverIds[0] || null;
-    if (!primaryId && (!serverIds || serverIds.length === 0)) {
-      setItems(prev => prev.filter(i => i !== found));
-      toast.show("Removed local item");
-      return;
-    }
-
-  
-    const prevItems = items;
-    setItems(prev => prev.filter(i => i !== found && normalizeKey(i._id) !== normalizeKey(primaryId)));
-
-    toast.show("Deleting...");
-
-    try {
-      if (serverIds.length > 1) {
-        for (const sid of serverIds) {
-          try {
-            await deleteItem(sid);
-            console.info("Deleted server id", sid);
-          } catch (e) {
-            console.warn("Failed deleteItem for sid", sid, e);
-          }
-        }
-      } else {
-        await deleteItem(primaryId);
-      }
-      toast.show("Deleted ✔");
-      await loadItems();
-    } catch (err) {
-      console.error("Delete error:", err);
-      setItems(prevItems);
-      toast.show("Delete failed");
-      await loadItems();
+  if (!found) {
+    const cleaned = String(targetIdOrName).replace(/["'`]/g, "").trim();
+    if (cleaned !== targetIdOrName) {
+      found = findItemByName(cleaned);
     }
   }
 
-  async function handleVoiceCommand(rawText) {
-    if (!rawText || !rawText.trim()) {
-      toast.show("No voice input");
-      return;
-    }
-
-    setParsePreview(null);
-    setTranslatedText("");
-    setLastMatch(null);
-    setListeningState(true);
-    toast.show("Processing voice...");
-
-    try {
-      const { parsed, translatedText: tText } = await parseAndTranslateVoice(rawText || "");
-      setTranslatedText(tText || rawText);
-      setParsePreview(parsed || null);
-
-      const action = (parsed && parsed.action) || "unknown";
-      const qtyRequested = Number((parsed && parsed.quantity) || 1);
-      const itemText = (parsed && (parsed.item || parsed.name)) || (tText || rawText);
-
-      if (!itemText || itemText.trim().length === 0) {
-        toast.show("Could not detect item");
-        return;
-      }
-
-      
-      const matched = findBestMatchForSpoken(itemText);
-      setLastMatch(matched || null);
-
-      if (!matched) {
-        toast.show(`"${itemText}" not found in store`);
-        return;
-      }
-
-      const prod = matched;
-
-     
-      if (action === "add" || action === "buy") {
-        await addToCartByProduct(prod, qtyRequested);
-        return;
-      }
-
-     
-      if (action === "delete" || action === "remove") {
-        const norm = (s = "") => String(s || "").toLowerCase().trim();
-        const spokenNorm = norm(itemText || tText || rawText);
-
-        let existing = items.find(it => {
-          const iname = norm(it.name);
-          if (!iname) return false;
-          if (iname === norm(prod.name)) return true;
-          if (iname.includes(norm(prod.name))) return true;
-          if (norm(prod.name).includes(iname)) return true;
-       
-          if (iname.replace(/s$/, "") === norm(prod.name).replace(/s$/, "")) return true;
-          return false;
-        });
-
-        if (!existing) {
-          const tokens = spokenNorm.split(/\s+/).filter(Boolean);
-          existing = items.find(it => {
-            const iname = norm(it.name);
-            return tokens.some(tok => {
-              if (!tok) return false;
-              if (iname === tok) return true;
-              if (iname.includes(tok)) return true;
-              if (iname.includes(tok.replace(/s$/, ""))) return true;
-              return false;
-            });
-          });
-        }
-
-        
-        if (!existing) {
-          const prodTags = (prod.tags || []).map(t => norm(t));
-          const prodParts = norm(prod.name).split(/\s+/).filter(Boolean);
-          existing = items.find(it => {
-            const iname = norm(it.name);
-            if (prodTags.some(tag => tag && iname.includes(tag))) return true;
-            if (prodParts.some(p => p && (iname === p || iname.includes(p)))) return true;
-            return false;
-          });
-        }
-
-      
-        console.info("Voice delete debug:", { rawText, itemText, prodName: prod.name, items, existing });
-
-        
-        if (!existing) {
-          await handleDelete(prod.name);
-          return;
-        }
-
-        const existingQty = Number(existing.quantity || 0);
-        const removeQty = Number(Number.isFinite(qtyRequested) ? qtyRequested : 1);
-
-       
-        if (removeQty > 0 && removeQty < existingQty) {
-          
-          const remaining = existingQty - removeQty;
-      
-          setItems(prev => prev.map(it => (it === existing ? { ...it, quantity: remaining } : it)));
-
-          if (!existing._id) {
-            toast.show(`Removed ${removeQty} × ${existing.name} (local)`);
-            return;
-          }
-
-          try {
-            toast.show(`Removing ${removeQty} × ${existing.name}...`);
-          
-            const sids = Array.isArray(existing.serverIds) && existing.serverIds.length ? existing.serverIds : existing._id ? [existing._id] : [];
-            for (const sid of sids) {
-              try {
-                await deleteItem(sid);
-              } catch (e) {
-                console.warn("partial-delete failed for", sid, e);
-              }
-            }
-            if (remaining > 0) {
-              await addItem({ name: existing.name, quantity: remaining, price: existing.price || 0 });
-            }
-            toast.show(`Removed ${removeQty} × ${existing.name}`);
-            await loadItems();
-          } catch (err) {
-            console.error("Partial remove failed:", err);
-            toast.show("Remove failed");
-            await loadItems();
-          }
-          return;
-        }
-
-        await handleDelete(existing._id || existing.serverIds?.[0] || existing.name);
-        return;
-      }
-
-
-      toast.show("Command not recognized — try: add 2 bananas / remove 2 bananas");
-    } catch (err) {
-      console.error("Voice processing failed:", err);
-
-      try {
-        const p = parseVoice(rawText || "");
-        setParsePreview(p);
-        if (p.action === "add" && p.item) {
-          const m = matchProductName(p.item);
-          if (m) {
-            await addToCartByProduct(m, p.quantity || 1);
-          } else {
-            toast.show(`${p.item} not found`);
-          }
-        } else if (p.action === "delete" && p.item) {
-          const m = matchProductName(p.item);
-          if (m) {
-            const existing = findItemByName(m.name);
-            if (existing) {
-              if (p.quantity && Number(p.quantity) < (existing.quantity || 0)) {
-                
-                setItems(prev => prev.map(it => (it === existing ? { ...it, quantity: (existing.quantity - Number(p.quantity)) } : it)));
-                toast.show(`Removed ${p.quantity} × ${existing.name}`);
-              } else {
-                await handleDelete(existing._id || existing.name);
-              }
-            } else {
-              toast.show(`${m.name} not in cart`);
-            }
-          } else {
-            toast.show(`${p.item} not found`);
-          }
-        } else {
-          toast.show("Could not parse voice");
-        }
-      } catch (e) {
-        console.error("Fallback parse failed:", e);
-        toast.show("Voice error");
-      }
-    } finally {
-      setListeningState(false);
+  
+  if (!found) {
+    const cat = matchProductName(targetIdOrName);
+    if (cat && cat.name) {
+      console.info("Catalogue fallback matched:", cat.name);
+      found = findItemByName(cat.name);
     }
   }
 
  
+  if (!found) {
+    try {
+      console.info("handleDelete: performing server-side fallback fetchItems()");
+      const serverList = await fetchItems();
+      const normServer = normalizeServerItems(serverList);
+      if (Array.isArray(normServer) && normServer.length) {
+        const key = normalizeKey(targetIdOrName);
+        
+        const byId = normServer.find(si => si._id && normalizeKey(si._id) === key);
+        if (byId) {
+          found = byId;
+        } else {
+         
+          const byName = normServer.find(si => {
+            const sn = normalizeKey(si.name);
+            if (!sn) return false;
+            if (sn === key) return true;
+            if (sn.includes(key)) return true;
+            if (key.includes(sn)) return true;
+            if (sn.replace(/s$/, "") === key.replace(/s$/, "")) return true;
+            return false;
+          });
+          if (byName) found = byName;
+        }
+      }
+    } catch (e) {
+      console.warn("handleDelete server-side fallback failed:", e);
+    }
+  }
+
+  if (!found) {
+    toast.show("Item not in cart");
+    console.info("handleDelete: could not resolve", targetIdOrName, "— items:", items);
+    return;
+  }
+
+  console.info("handleDelete: resolved to", found);
+
+  
+  const serverIds = Array.isArray(found.serverIds) ? found.serverIds.filter(Boolean) : (found._id ? [found._id] : []);
+  const primaryId = found._id || serverIds[0] || null;
+
+
+  if (!primaryId && (!serverIds || serverIds.length === 0)) {
+    setItems(prev => prev.filter(i => i !== found));
+    toast.show("Removed local item");
+    return;
+  }
+
+ 
+  const prevItems = items;
+  setItems(prev => prev.filter(i => i !== found && normalizeKey(i._id) !== normalizeKey(primaryId)));
+
+  toast.show("Deleting...");
+
+  try {
+
+    if (serverIds.length > 1) {
+      for (const sid of serverIds) {
+        try {
+          console.info("Deleting server id:", sid);
+          await deleteItem(sid);
+        } catch (e) {
+          console.warn("Failed deleteItem for sid", sid, e);
+        }
+      }
+    } else {
+      console.info("Deleting primary id:", primaryId);
+      await deleteItem(primaryId);
+    }
+
+    toast.show("Deleted ✔");
+  
+    await loadItems();
+  } catch (err) {
+    console.error("Delete error:", err);
+   
+    setItems(prevItems);
+    toast.show("Delete failed");
+    await loadItems();
+  }
+}
+
+function extractNumberFromText(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase();
+ 
+  const digitMatch = t.match(/\b(\d+)\b/);
+  if (digitMatch) return Number(digitMatch[1]);
+
+  
+  const words = {
+    zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+    ek:1, do:2, teen:3, chaar:4, chaarh:4, paanch:5, chhe:6, saat:7, aath:8, nau:9, das:10, 
+    "1":1,"2":2
+  };
+  const toks = t.split(/\s+/);
+  for (const tok of toks) {
+    const clean = tok.replace(/[^a-z0-9]/g, "");
+    if (!clean) continue;
+    if (words.hasOwnProperty(clean)) return Number(words[clean]);
+  }
+  return null;
+}
+
+
+async function handleVoiceCommand(rawText) {
+  if (!rawText || !rawText.trim()) {
+    toast.show("No voice input");
+    return;
+  }
+
+  setParsePreview(null);
+  setTranslatedText("");
+  setLastMatch(null);
+  setListeningState(true);
+  toast.show("Processing voice...");
+
+  try {
+    const { parsed, translatedText: tText } = await parseAndTranslateVoice(rawText || "");
+    setTranslatedText(tText || rawText);
+    setParsePreview(parsed || null);
+
+  
+    const action = (parsed && parsed.action) || "unknown";
+
+   
+    let qtyRequested = null;
+    if (parsed && parsed.quantity !== undefined && parsed.quantity !== null && parsed.quantity !== "") {
+      const v = Number(parsed.quantity);
+      qtyRequested = Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+    }
+    if (qtyRequested == null) {
+    
+      qtyRequested = extractNumberFromText(tText) || extractNumberFromText(rawText);
+    }
+    if (qtyRequested == null || !Number.isFinite(qtyRequested) || qtyRequested <= 0) qtyRequested = 1; 
+    const itemText = (parsed && (parsed.item || parsed.name)) || (tText || rawText);
+
+    if (!itemText || itemText.trim().length === 0) {
+      toast.show("Could not detect item");
+      return;
+    }
+
+
+    const matched = findBestMatchForSpoken(itemText);
+    setLastMatch(matched || null);
+
+    if (!matched) {
+      toast.show(`"${itemText}" not found in store`);
+      console.info("No catalogue match for voice:", { rawText, itemText });
+      return;
+    }
+
+    const prod = matched;
+
+
+    if (action === "add" || action === "buy") {
+      await addToCartByProduct(prod, qtyRequested);
+      return;
+    }
+
+    if (action === "delete" || action === "remove") {
+      const norm = (s = "") => String(s || "").toLowerCase().trim();
+      const spokenNorm = norm(itemText || tText || rawText);
+
+    
+      if (!items || items.length === 0) {
+        toast.show("Refreshing cart...");
+        await loadItems();
+      }
+
+     
+      let existing = items.find(it => {
+        const iname = norm(it.name);
+        if (!iname) return false;
+        if (iname === norm(prod.name)) return true;
+        if (iname.includes(norm(prod.name))) return true;
+        if (norm(prod.name).includes(iname)) return true;
+        if (iname.replace(/s$/, "") === norm(prod.name).replace(/s$/, "")) return true;
+        return false;
+      });
+
+      if (!existing) {
+        const tokens = spokenNorm.split(/\s+/).filter(Boolean);
+        existing = items.find(it => {
+          const iname = norm(it.name);
+          return tokens.some(tok => {
+            if (!tok) return false;
+            if (iname === tok) return true;
+            if (iname.includes(tok)) return true;
+            if (iname.includes(tok.replace(/s$/, ""))) return true;
+            return false;
+          });
+        });
+      }
+
+      if (!existing) {
+        const prodTags = (prod.tags || []).map(t => norm(t));
+        const prodParts = norm(prod.name).split(/\s+/).filter(Boolean);
+        existing = items.find(it => {
+          const iname = norm(it.name);
+          if (prodTags.some(tag => tag && iname.includes(tag))) return true;
+          if (prodParts.some(p => p && (iname === p || iname.includes(p)))) return true;
+          return false;
+        });
+      }
+
+      console.info("Voice delete debug:", { rawText, itemText, prodName: prod.name, qtyRequested, items, existing });
+
+
+      if (!existing) {
+        try {
+          const serverList = await fetchItems();
+          const normServer = normalizeServerItems(serverList);
+          const pn = normalizeKey(prod.name || "");
+          const serverMatch = normServer.find(si => {
+            const sn = normalizeKey(si.name || "");
+            if (!sn) return false;
+            if (sn === pn) return true;
+            if (sn.includes(pn)) return true;
+            if (pn.includes(sn)) return true;
+            if (sn.replace(/s$/, "") === pn.replace(/s$/, "")) return true;
+            return false;
+          });
+          if (serverMatch) {
+            console.info("Server-side fallback matched:", serverMatch);
+           
+            const serverQty = Number(serverMatch.quantity || 0);
+            if (qtyRequested > 0 && qtyRequested < serverQty) {
+            
+              const result = await partialRemoveQuantity(serverMatch, qtyRequested);
+              if (result && result.success) {
+                toast.show(`Removed ${result.removed} × ${serverMatch.name}`);
+              } else {
+                toast.show("Remove partially failed");
+              }
+              await loadItems();
+              return;
+            } else {
+              await handleDelete(serverMatch._id || serverMatch.serverIds?.[0] || serverMatch.name);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("Server fallback fetchItems failed", e);
+        }
+      }
+
+      
+      if (!existing) {
+        await handleDelete(prod.name);
+        return;
+      }
+
+      const existingQty = Number(existing.quantity || 0);
+      const removeQty = Number(qtyRequested || 1);
+
+      
+      if (removeQty > 0 && removeQty < existingQty) {
+        const remaining = existingQty - removeQty;
+        setItems(prev => prev.map(it => (it === existing ? { ...it, quantity: remaining } : it)));
+
+    
+        if (!existing._id && (!existing.serverIds || existing.serverIds.length === 0)) {
+          toast.show(`Removed ${removeQty} × ${existing.name} (local)`);
+          return;
+        }
+
+        
+        try {
+          toast.show(`Removing ${removeQty} × ${existing.name}...`);
+          const result = await partialRemoveQuantity(existing, removeQty);
+          if (result && result.success) {
+            toast.show(`Removed ${result.removed} × ${existing.name}`);
+          } else {
+            toast.show("Remove partially failed");
+          }
+          await loadItems();
+        } catch (err) {
+          console.error("Partial remove failed:", err);
+          toast.show("Remove failed");
+          await loadItems();
+        }
+        return;
+      }
+
+    
+      await handleDelete(existing._id || existing.serverIds?.[0] || existing.name);
+      return;
+    }
+
+
+    toast.show("Command not recognized — try: add 2 bananas / remove 2 bananas");
+  } catch (err) {
+    console.error("Voice processing failed:", err);
+   
+    try {
+      const p = parseVoice(rawText || "");
+      setParsePreview(p);
+     
+      if (p.action === "add" && p.item) {
+        const m = matchProductName(p.item);
+        if (m) {
+          await addToCartByProduct(m, p.quantity || 1);
+        } else {
+          toast.show(`${p.item} not found`);
+        }
+      } else if (p.action === "delete" && p.item) {
+        const m = matchProductName(p.item);
+        if (m) {
+      
+          let existing = findItemByName(m.name);
+          if (!existing) {
+            try {
+              const serverList = await fetchItems();
+              const normServer = normalizeServerItems(serverList);
+              existing = normServer.find(si => normalizeKey(si.name) === normalizeKey(m.name));
+            } catch (e) {
+              console.warn("Fallback server check failed", e);
+            }
+          }
+          if (existing) {
+          
+            const qty = p.quantity ? Number(p.quantity) : 1;
+            if (qty > 0 && qty < Number(existing.quantity || 0)) {
+              const result = await partialRemoveQuantity(existing, qty);
+              if (result && result.success) toast.show(`Removed ${result.removed} × ${existing.name}`);
+              await loadItems();
+            } else {
+              await handleDelete(existing._id || existing.serverIds?.[0] || existing.name);
+            }
+          } else {
+            toast.show(`${m.name} not in cart`);
+          }
+        } else {
+          toast.show(`${p.item} not found`);
+        }
+      } else {
+        toast.show("Could not parse voice");
+      }
+    } catch (e) {
+      console.error("Fallback parse failed:", e);
+      toast.show("Voice error");
+    }
+  } finally {
+    setListeningState(false);
+  }
+}
+
+
   useEffect(() => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -579,7 +787,7 @@ export default function Dashboard() {
     setListeningState(false);
   }
 
-  // UI data + helpers
+
   const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
   const totalPrice = items.reduce((s, it) => s + (it.quantity || 0) * (it.price || 0), 0);
 
